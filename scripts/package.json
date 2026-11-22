@@ -1,0 +1,9 @@
+{
+  "name": "citizen-reporting-admin-scripts",
+  "private": true,
+  "type": "module",
+  "description": "Server-only Firebase Admin SDK utilities (NEVER imported by the React Native client).",
+  "dependencies": {
+    "firebase-admin": "^13.0.0"
+  }
+}

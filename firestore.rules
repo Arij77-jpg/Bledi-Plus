@@ -1,0 +1,351 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =========================================================================
+    // ZERO-TRUST AUTHENTICATION & CUSTOM CLAIMS HELPERS
+    // Roles are NEVER trusted from Firestore documents; authorization strictly
+    // evaluates cryptographically signed Firebase Auth Custom Claims.
+    // =========================================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function hasClaimRole() {
+      return isAuthenticated() && ('role' in request.auth.token);
+    }
+
+    function getClaimRole() {
+      return hasClaimRole() ? request.auth.token.role : 'citizen';
+    }
+
+    function isAdmin() {
+      return hasClaimRole() && request.auth.token.role == 'admin';
+    }
+
+    function isEmployee() {
+      return hasClaimRole() && request.auth.token.role == 'employee';
+    }
+
+    function isStaffActive() {
+      return !('isActive' in request.auth.token) || request.auth.token.isActive == true;
+    }
+
+    function isSuperAdmin() {
+      return isAdmin() && (
+        ('isSuperAdmin' in request.auth.token && request.auth.token.isSuperAdmin == true)
+        || ('assignedRegion' in request.auth.token && request.auth.token.assignedRegion == 'ALL')
+      );
+    }
+
+    function hasRegionalAuthority(targetRegion) {
+      return isSuperAdmin()
+        || (hasClaimRole() && ('assignedRegion' in request.auth.token) && request.auth.token.assignedRegion == targetRegion)
+        || (hasClaimRole() && ('assignedRegion' in request.auth.token) && request.auth.token.assignedRegion == 'ALL');
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // =========================================================================
+    // SCHEMA & VALIDATION HELPERS
+    // =========================================================================
+
+    function isValidCitizenRegistration() {
+      return request.resource.data.keys().hasAll([
+          'uid', 'email', 'displayName', 'role', 'points', 'badge', 'reportsCount', 'resolvedCount'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'uid', 'email', 'displayName', 'photoURL', 'role', 'assignedRegion', 'isSuperAdmin', 'pushToken', 'points', 'badge',
+          'reportsCount', 'resolvedCount', 'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email is string
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() >= 2
+        && request.resource.data.displayName.size() <= 80
+        // Anti-escalation & public domain guard:
+        // Must be 'civil' (or legacy 'citizen') AND cannot be staff domain (@bledi.admin.tn, @bledi.employee.tn)
+        && (request.resource.data.role == 'civil' || request.resource.data.role == 'citizen')
+        && !request.auth.token.email.matches('.*@bledi\\.(admin|employee)\\.tn$')
+        && request.resource.data.points == 0
+        && request.resource.data.badge == 'Novice Watcher'
+        && request.resource.data.reportsCount == 0
+        && request.resource.data.resolvedCount == 0;
+    }
+
+    function isValidProfileSelfUpdate() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['displayName', 'photoURL', 'pushToken', 'updatedAt'])
+        && (
+          !('displayName' in request.resource.data.diff(resource.data).affectedKeys())
+          || (
+            request.resource.data.displayName is string
+            && request.resource.data.displayName.size() >= 2
+            && request.resource.data.displayName.size() <= 80
+          )
+        )
+        && (
+          !('pushToken' in request.resource.data.diff(resource.data).affectedKeys())
+          || request.resource.data.pushToken == null
+          || (
+            request.resource.data.pushToken is string
+            && request.resource.data.pushToken.size() <= 256
+          )
+        )
+        && (
+          !('photoURL' in request.resource.data.diff(resource.data).affectedKeys())
+          || request.resource.data.photoURL == null
+          || (
+            request.resource.data.photoURL is string
+            && request.resource.data.photoURL.matches('^https?://.*')
+          )
+        );
+    }
+
+    function isValidCoordinates(loc) {
+      return loc is map
+        && loc.keys().hasAll(['latitude', 'longitude', 'address'])
+        && loc.latitude is number
+        && loc.latitude >= -90.0
+        && loc.latitude <= 90.0
+        && loc.longitude is number
+        && loc.longitude >= -180.0
+        && loc.longitude <= 180.0
+        && loc.address is string
+        && loc.address.size() >= 2
+        && loc.address.size() <= 240;
+    }
+
+    function isValidNewReport() {
+      return request.resource.data.keys().hasAll([
+          'title', 'description', 'category', 'status', 'location', 'region',
+          'imageUrl', 'userId', 'upvotesCount', 'upvotedBy'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'id', 'title', 'description', 'category', 'status', 'priority',
+          'location', 'region', 'imageUrl', 'imagePath', 'photoBeforeUrl', 'photoAfterUrl', 'userId',
+          'userDisplayName', 'upvotesCount', 'upvotedBy', 'resolution',
+          'assignedTo', 'assignedToName', 'assignedAt', 'inProgressAt',
+          'resolvedBy', 'resolvedAt', 'completedBy', 'completedAt', 'resolutionNote',
+          'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.userId == request.auth.uid
+        // Strict status & counter defaults on creation
+        && request.resource.data.status == 'pending'
+        && request.resource.data.upvotesCount == 0
+        && request.resource.data.upvotedBy is list
+        && request.resource.data.upvotedBy.size() == 0
+        && (!('photoAfterUrl' in request.resource.data) || request.resource.data.photoAfterUrl == null)
+        && (!('resolution' in request.resource.data) || request.resource.data.resolution == null)
+        && (!('assignedTo' in request.resource.data) || request.resource.data.assignedTo == null)
+        && (!('priority' in request.resource.data) || request.resource.data.priority == 'medium')
+        // Content, regional jurisdiction & coordinate schema checks
+        && request.resource.data.region is string
+        && request.resource.data.region.size() >= 2
+        && request.resource.data.region.size() <= 80
+        && request.resource.data.category in ['infrastructure', 'sanitation', 'lighting', 'water', 'other']
+        && request.resource.data.title is string
+        && request.resource.data.title.size() >= 3
+        && request.resource.data.title.size() <= 120
+        && request.resource.data.description is string
+        && request.resource.data.description.size() >= 5
+        && request.resource.data.description.size() <= 2000
+        && request.resource.data.imageUrl is string
+        && request.resource.data.imageUrl.size() > 10
+        && request.resource.data.imageUrl.matches('^https?://.*')
+        && isValidCoordinates(request.resource.data.location);
+    }
+
+    function isValidUpvoteMutation() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['upvotedBy', 'upvotesCount', 'updatedAt'])
+        && request.resource.data.upvotedBy is list
+        && resource.data.upvotedBy is list
+        && request.resource.data.upvotesCount is int
+        && resource.data.upvotesCount is int
+        && (
+          // Adding strictly own UID (+1)
+          (
+            !(request.auth.uid in resource.data.upvotedBy)
+            && (request.auth.uid in request.resource.data.upvotedBy)
+            && request.resource.data.upvotedBy.size() == resource.data.upvotedBy.size() + 1
+            && request.resource.data.upvotedBy.hasAll(resource.data.upvotedBy)
+            && request.resource.data.upvotesCount == resource.data.upvotesCount + 1
+          )
+          ||
+          // Removing strictly own UID (-1)
+          (
+            (request.auth.uid in resource.data.upvotedBy)
+            && !(request.auth.uid in request.resource.data.upvotedBy)
+            && request.resource.data.upvotedBy.size() == resource.data.upvotedBy.size() - 1
+            && resource.data.upvotedBy.hasAll(request.resource.data.upvotedBy)
+            && request.resource.data.upvotesCount >= 0
+            && request.resource.data.upvotesCount == resource.data.upvotesCount - 1
+          )
+        );
+    }
+
+    function hasValidResolutionProof() {
+      return ('photoAfterUrl' in request.resource.data)
+        && request.resource.data.photoAfterUrl is string
+        && request.resource.data.photoAfterUrl.size() > 10
+        && request.resource.data.photoAfterUrl.matches('^https?://.*')
+        && (
+          !('resolution' in request.resource.data)
+          || request.resource.data.resolution == null
+          || (
+            request.resource.data.resolution is map
+            && request.resource.data.resolution.afterImageUrl == request.resource.data.photoAfterUrl
+            && request.resource.data.resolution.resolvedBy == request.auth.uid
+          )
+        );
+    }
+
+    function isValidEmployeeUpdate() {
+      return isEmployee()
+        && isStaffActive()
+        && hasRegionalAuthority(resource.data.region)
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly([
+            'status', 'photoAfterUrl', 'resolution', 'assignedTo', 'assignedToName',
+            'assignedAt', 'inProgressAt', 'resolvedBy', 'resolvedAt',
+            'completedBy', 'completedAt', 'resolutionNote', 'updatedAt'
+          ])
+        && (
+          // pending -> in_progress
+          (
+            resource.data.status == 'pending'
+            && request.resource.data.status == 'in_progress'
+          )
+          ||
+          // pending | in_progress -> completed | resolved (REQUIRES photoAfterUrl)
+          (
+            (resource.data.status == 'pending' || resource.data.status == 'in_progress')
+            && (request.resource.data.status in ['completed', 'resolved'])
+            && hasValidResolutionProof()
+          )
+        );
+    }
+
+    function isValidAdminUpdate() {
+      return isAdmin()
+        && hasRegionalAuthority(resource.data.region)
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.status in ['pending', 'in_progress', 'completed', 'resolved']
+        && (!('priority' in request.resource.data)
+            || request.resource.data.priority in ['low', 'medium', 'high', 'critical'])
+        && (!('category' in request.resource.data)
+            || request.resource.data.category in ['infrastructure', 'sanitation', 'lighting', 'water', 'other'])
+        && (!('region' in request.resource.data)
+            || (request.resource.data.region is string && request.resource.data.region.size() >= 2 && request.resource.data.region.size() <= 80))
+        && (!('title' in request.resource.data)
+            || (request.resource.data.title is string && request.resource.data.title.size() >= 3 && request.resource.data.title.size() <= 120))
+        && (!('description' in request.resource.data)
+            || (request.resource.data.description is string && request.resource.data.description.size() >= 5 && request.resource.data.description.size() <= 2000))
+        && (!(request.resource.data.status in ['completed', 'resolved']) || hasValidResolutionProof());
+    }
+
+    // =========================================================================
+    // USERS COLLECTION (/users/{userId})
+    // NOTE: Gamification counters ('points', 'reportsCount', 'resolvedCount', 'badge')
+    // and verified 'role' mirror are server-authoritative via Cloud Functions / Admin SDK.
+    // =========================================================================
+    match /users/{userId} {
+      // PII Protection: citizens can read only their own profile; Admins can inspect all users
+      allow read: if isOwner(userId) || isAdmin();
+
+      // Citizens register with role in ['civil', 'citizen']; Admins may pre-provision records
+      allow create: if (isOwner(userId) && isValidCitizenRegistration()) || isAdmin();
+
+      // Citizens can mutate ONLY safe profile fields; Admin can manage user profiles
+      allow update: if (isOwner(userId) && isValidProfileSelfUpdate()) || isAdmin();
+
+      // Account removal: user may self-delete own profile (GDPR) or Admin can revoke
+      allow delete: if isOwner(userId) || isAdmin();
+
+      // -----------------------------------------------------------------------
+      // NOTIFICATIONS SUBCOLLECTION (/users/{userId}/notifications/{notifId})
+      // -----------------------------------------------------------------------
+      match /notifications/{notifId} {
+        // Staff member reads their own notifications; Admin can inspect
+        allow read: if isOwner(userId) || isAdmin();
+
+        // System / authenticated clients can deliver targeted incident alerts
+        allow create: if isAuthenticated()
+          && request.resource.data.keys().hasAll(['type', 'reportId', 'title', 'body', 'region'])
+          && request.resource.data.type == 'NEW_REPORT';
+
+        // Staff member can toggle read status
+        allow update: if isOwner(userId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read', 'updatedAt']);
+
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+    }
+
+    // =========================================================================
+    // REPORTS COLLECTION (/reports/{reportId})
+    // =========================================================================
+    match /reports/{reportId} {
+      // All authenticated users (citizen, employee, admin) can read civic reports
+      allow read: if isAuthenticated();
+
+      // Citizens create reports strictly defaulted to status='pending' with valid coordinates
+      allow create: if isAuthenticated() && isValidNewReport();
+
+      // Differential Role-Based Update Pipeline:
+      // 1. Any authenticated user can toggle ONLY their own upvote (+1/-1)
+      // 2. Pre-provisioned Employee can transition pending -> in_progress -> resolved (with photoAfterUrl)
+      // 3. Admin can triage, reassign, edit, or resolve (with photoAfterUrl)
+      allow update: if isAuthenticated() && (
+        isValidUpvoteMutation()
+        || isValidEmployeeUpdate()
+        || isValidAdminUpdate()
+      );
+
+      // Report deletion restricted strictly to Admins possessing regional authority
+      allow delete: if isAdmin() && hasRegionalAuthority(resource.data.region);
+
+      // -----------------------------------------------------------------------
+      // COMMENTS SUBCOLLECTION (/reports/{reportId}/comments/{commentId})
+      // -----------------------------------------------------------------------
+      match /comments/{commentId} {
+        allow read: if isAuthenticated();
+
+        allow create: if isAuthenticated()
+          && request.resource.data.keys().hasAll(['reportId', 'userId', 'userDisplayName', 'text'])
+          && request.resource.data.keys().hasOnly([
+            'id', 'reportId', 'userId', 'userDisplayName', 'userRole', 'text', 'createdAt'
+          ])
+          && request.resource.data.reportId == reportId
+          && request.resource.data.userId == request.auth.uid
+          && (!('userRole' in request.resource.data) || request.resource.data.userRole == getClaimRole())
+          && request.resource.data.text is string
+          && request.resource.data.text.size() >= 1
+          && request.resource.data.text.size() <= 1000;
+
+        allow update: if false;
+
+        allow delete: if isAdmin() || isOwner(resource.data.userId);
+      }
+    }
+
+    // =========================================================================
+    // ARCHIVED REPORTS AUDIT LOG (/archived_reports/{reportId})
+    // Restricted strictly to Admin inspection and audit compliance.
+    // =========================================================================
+    match /archived_reports/{reportId} {
+      allow read, write: if isAdmin();
+    }
+
+    // Default deny catch-all for any unmapped paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

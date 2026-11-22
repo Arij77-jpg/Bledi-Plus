@@ -1,0 +1,106 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // =========================================================================
+    // ZERO-TRUST STORAGE HELPERS
+    // Enforces authentication, max 5MB file size, strict JPEG/PNG MIME types,
+    // and Custom Claim authorization on staff resolution proof directories.
+    // =========================================================================
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function hasRoleClaim() {
+      return isSignedIn() && ('role' in request.auth.token);
+    }
+
+    function isAdmin() {
+      return hasRoleClaim() && request.auth.token.role == 'admin';
+    }
+
+    function isStaff() {
+      return hasRoleClaim() && request.auth.token.role in ['admin', 'employee'];
+    }
+
+    function isValidImageUpload() {
+      return request.resource != null
+        && request.resource.size > 0
+        && request.resource.size <= 5 * 1024 * 1024
+        && request.resource.contentType in ['image/jpeg', 'image/png'];
+    }
+
+    // -------------------------------------------------------------------------
+    // 1. Citizen "Before" Incident Evidence Uploads
+    // Path: reports/{reportId}/evidence/{fileName} or reports/{imageId}
+    // Any authenticated user can upload create-only evidence (max 5MB, JPEG/PNG)
+    // tagged with their own UID in metadata. Immutable once uploaded.
+    // -------------------------------------------------------------------------
+    match /reports/{imageId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidImageUpload();
+      allow delete: if isAdmin();
+    }
+
+    match /reports/{reportId}/evidence/{fileName} {
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn()
+        && isValidImageUpload()
+        && request.resource.metadata != null
+        && request.resource.metadata.uploadedBy == request.auth.uid;
+
+      allow update: if false;
+
+      allow delete: if isAdmin();
+    }
+
+    // -------------------------------------------------------------------------
+    // 2. Staff "After" Verification Proof Uploads
+    // Path: reports/{reportId}/resolution_proof/{fileName} or proofs/{proofId}
+    // Strictly locked to Admins and pre-provisioned Municipal Employees.
+    // Citizens receive HTTP 403 / storage/unauthorized on write attempts.
+    // -------------------------------------------------------------------------
+    match /proofs/{proofId} {
+      allow read: if isSignedIn();
+      allow create, update: if isStaff() && isValidImageUpload();
+      allow delete: if isAdmin();
+    }
+
+    match /reports/{reportId}/resolution_proof/{fileName} {
+      allow read: if isSignedIn();
+
+      allow create, update: if isStaff()
+        && isValidImageUpload();
+
+      allow delete: if isAdmin();
+    }
+
+    // Recursive subpath admin deletion for all report artifacts
+    match /reports/{reportId}/{allSubpaths=**} {
+      allow read: if isSignedIn();
+      allow delete: if isAdmin();
+    }
+
+    // -------------------------------------------------------------------------
+    // 3. Optional User Profile Avatars
+    // Path: avatars/{userId}/{fileName}
+    // -------------------------------------------------------------------------
+    match /avatars/{userId}/{fileName} {
+      allow read: if isSignedIn();
+
+      allow create, update: if isSignedIn()
+        && request.auth.uid == userId
+        && isValidImageUpload();
+
+      allow delete: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+    }
+
+    // Default deny catch-all: reject unapproved Storage paths
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

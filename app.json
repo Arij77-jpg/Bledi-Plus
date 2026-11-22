@@ -1,0 +1,64 @@
+{
+  "expo": {
+    "name": "Bledi+",
+    "slug": "bledi-plus",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "blediplus",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": false,
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0A1128"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.blediplus.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Bledi+ a besoin d'accéder à votre appareil photo pour photographier les anomalies et dégradations urbaines.",
+        "NSPhotoLibraryUsageDescription": "Bledi+ a besoin d'accéder à votre galerie photo pour joindre des photos d'incidents.",
+        "NSLocationWhenInUseUsageDescription": "Bledi+ utilise vos coordonnées GPS pour localiser précisément l'incident sur la carte municipale."
+      }
+    },
+    "android": {
+      "package": "com.blediplus.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0A1128"
+      },
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-localization",
+      "expo-notifications",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Bledi+ a besoin d'accéder à votre appareil photo pour photographier les anomalies et dégradations urbaines."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Bledi+ a besoin d'accéder à votre galerie photo pour joindre des photos d'incidents."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Bledi+ utilise vos coordonnées GPS pour localiser précisément l'incident sur la carte municipale."
+        }
+      ]
+    ]
+  }
+}
